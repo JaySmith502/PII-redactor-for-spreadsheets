@@ -129,6 +129,56 @@ def _pivot_like_workbook(path: Path) -> None:
         archive.writestr("xl/worksheets/sheet1.xml", worksheet)
 
 
+def _inline_workbook(
+    path: Path, rows: list[list[str]], sheet_name: str = "Clients"
+) -> None:
+    """Write a one-sheet workbook whose rows are literal strings."""
+    body = []
+    for row_index, values in enumerate(rows, start=1):
+        cells = "".join(
+            f'<c r="{letter}{row_index}" t="inlineStr"><is><t>{value}</t></is></c>'
+            for letter, value in zip("ABCDEFGH", values)
+        )
+        body.append(f'<row r="{row_index}">{cells}</row>')
+    worksheet = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(body)}</sheetData></worksheet>'
+    )
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>""",
+        )
+        archive.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="%s" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"""
+            % sheet_name,
+        )
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+                Target="worksheets/sheet1.xml"/>
+</Relationships>""",
+        )
+        archive.writestr("xl/worksheets/sheet1.xml", worksheet)
+
+
 def _sheet_values(path: Path) -> dict[str, str]:
     parts, _ = load_package(path)
     _, shared_strings = read_shared_strings(parts)
@@ -174,6 +224,49 @@ class ProcessorSampleWorkbookTest(unittest.TestCase):
                 [column["namespace"] for column in columns["Pivot Summary"][:3]],
                 ["portfolio-name", "account-name", "total"],
             )
+
+    def test_wordy_data_row_does_not_displace_the_header_row(self) -> None:
+        """A data row must never outrank the header row.
+
+        Regression test for a PII leak. The header picker used to add a point
+        for every cell containing a space, so plain headers ("Name", "Email",
+        "City") scored below a data row of ordinary full names and addresses.
+        The header row was then placed one row too low, which moved
+        ``start_row`` past the first real data row and left it unencrypted.
+        """
+        rows = [
+            ["Name", "Email", "City"],
+            ["John Smith", "jsmith@example.com", "San Francisco"],
+            ["Jane Doe", "jdoe@example.com", "New York"],
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "wordy.xlsx"
+            _inline_workbook(source, rows)
+
+            columns = peek_workbook_columns(source)
+
+            self.assertEqual(
+                [column["header"] for column in columns["Clients"]],
+                ["Name", "Email", "City"],
+            )
+            # Every data row is at or below start_row, so none can be skipped.
+            self.assertEqual(
+                [column["start_row"] for column in columns["Clients"]], [2, 2, 2]
+            )
+
+            cipher = CellCipher(secrets.token_bytes(64))
+            encrypted = Path(directory) / "wordy.encrypted.xlsx"
+            stats = transform_workbook(
+                source, encrypted, cipher, "encrypt", selected_columns={"0|A"}
+            )
+
+            self.assertEqual(
+                stats.encrypted_columns, [("Clients", "Name")]
+            )
+            values = _sheet_values(encrypted)
+            self.assertTrue(values["A2"].startswith("name:"))
+            self.assertTrue(values["A3"].startswith("name:"))
+            self.assertEqual(values["A1"], "Name")
 
     def test_dynamic_columns_replacements_and_decrypt_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -32,6 +32,9 @@
     </footer>
   </div>
 
+  {# The copy-key button hands the master decryption key to the browser. It is
+     only rendered when the operator enables ENABLE_KEY_EXPOSURE. #}
+  {% if key_exposure_enabled | default(false) %}
   <button
     id="copy-key-button"
     class="copy-key-fab"
@@ -89,5 +92,6 @@
       </div>
     </div>
   </div>
+  {% endif %}
 </body>
 </html>

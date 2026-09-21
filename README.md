@@ -141,6 +141,35 @@ python -m uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1
 Bind Uvicorn only to `127.0.0.1`. IIS should terminate HTTPS and proxy the
 internal application URL to `http://127.0.0.1:8000`.
 
+Keep `--workers 1`. Pending uploads and finished downloads live in an in-memory
+job store that is private to each worker, so with two or more workers a file
+uploaded through `/peek` can be claimed by a different worker than the one that
+serves `/process`, and the user sees "This upload expired" at random. The
+upload and processing limits are per worker for the same reason.
+
+### Before handing the machine to a client
+
+The safe settings are already the defaults. Confirm them rather than change them:
+
+- `ENABLE_KEY_EXPOSURE` is unset, so the recovery key is never sent to a browser
+  (see [Copy secret key button](#copy-secret-key-button-disabled-by-default)).
+- Office package members that declare a DTD are refused instead of expanded, so a
+  small crafted `.xlsx`/`.docx` cannot exhaust memory (`parse_xml` in
+  `processor.py`).
+- Install the verification dependencies and run the suite once on the target
+  machine:
+
+  ```bash
+  python -m pip install -r requirements-dev.txt
+  python -m unittest discover -s tests -t .
+  ```
+
+  `requirements-dev.txt` is separate from `requirements.txt` because neither
+  package is needed to run the app. Install it anyway before sign-off:
+  `openpyxl` is what the real-workbook interop test uses to prove the output is
+  still valid OOXML, and that test skips itself when `openpyxl` is missing, so
+  skipping the install turns the strongest check into a silent pass.
+
 ## Workbook scope
 
 The application does not depend on fixed worksheet or column names.
@@ -153,9 +182,20 @@ column header, such as `client-name:<encrypted-value>`. Existing files that use
 legacy prefixes such as `custom:<encrypted-value>` still decrypt with the same
 secret key.
 
-For worksheets with a title row above the table, the picker uses the densest
-early row as the likely header row. Data below that header row is eligible for
-encryption. The original uploaded workbook is left unchanged.
+For worksheets with a title row above the table, the picker inspects the first
+ten rows and uses the most header-like multi-column row as the header row. Cells
+that parse as numbers count against a row, because totals and years look numeric
+while headers do not. Wordiness is deliberately *not* a signal, because a data
+value such as `ABC Retirement Portfolio` is exactly as wordy as the header
+`Portfolio Name`, and ranking a data row above the header would leave that row's
+PII unencrypted. Data below the chosen header row is eligible for encryption.
+The original uploaded workbook is left unchanged.
+
+When two rows score the same, the earliest one wins. That direction is
+intentional: mistaking a data row for the header starts encryption one row too
+low and leaves the first row of real PII in the clear, whereas mistaking a title
+row for the header only encrypts the real header row as well. Always confirm the
+column picker lists the headers you expect before processing a workbook.
 
 ## Find and replace
 
@@ -191,15 +231,21 @@ The web application loads `SECRET_KEY` from `.env` at startup and uses it for
 local encryption and decryption. The key is not included in workbook downloads,
 logged, or sent to external services.
 
-### Copy secret key button
+### Copy secret key button (disabled by default)
 
-Every page shows a floating **Copy secret key** button. It calls the
-`POST /secret-key` endpoint and places `SECRET_KEY` on the clipboard of the
-machine running the browser. The key is never drawn into the page, but it is
-sent to the browser in the response body.
+The floating **Copy secret key** button is off unless the operator opts in with
+`ENABLE_KEY_EXPOSURE=1` (also accepts `true`, `yes`, or `on`) in the environment
+or in `.env`. While it is off, the button is not rendered and `POST /secret-key`
+returns `404`, so the endpoint is not advertised. The application logs a warning
+at startup when the setting is on, and a warning for each blocked request when it
+is off.
+
+When enabled, the button calls the `POST /secret-key` endpoint and places
+`SECRET_KEY` on the clipboard of the machine running the browser. The key is
+never drawn into the page, but it is sent to the browser in the response body.
 
 This means the key is exposed in the browser UI by design. Note before
-deploying:
+enabling:
 
 - The application has no login. Anyone who can reach the app can read the key
   that decrypts every workbook the app has produced.

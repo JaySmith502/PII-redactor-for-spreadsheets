@@ -22,7 +22,7 @@ from starlette.concurrency import run_in_threadpool
 
 try:
     from .document_processor import replace_text_document
-    from .key_store import KeyConfigurationError, load_web_key
+    from .key_store import KeyConfigurationError, load_web_key, setting_enabled
     from .processor import (
         CellCipher,
         ReplacementRule,
@@ -33,7 +33,7 @@ try:
     )
 except ImportError:
     from document_processor import replace_text_document
-    from key_store import KeyConfigurationError, load_web_key
+    from key_store import KeyConfigurationError, load_web_key, setting_enabled
     from processor import (
         CellCipher,
         ReplacementRule,
@@ -49,7 +49,9 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_REQUEST_BYTES = 26 * 1024 * 1024
 JOB_TTL_SECONDS = 15 * 60
 CLEANUP_INTERVAL_SECONDS = 60
+MAX_PENDING_JOBS = 64
 CSRF_COOKIE = "pii_scrubber_csrf"
+KEY_EXPOSURE_SETTING = "ENABLE_KEY_EXPOSURE"
 LOGGER = logging.getLogger(__name__)
 EXCEL_SUFFIX = ".xlsx"
 REPLACE_DOCUMENT_SUFFIXES = {".xlsx", ".docx", ".pdf"}
@@ -227,6 +229,25 @@ def _parse_replacement_rules(raw: str, mode: str) -> list[ReplacementRule]:
     return rules
 
 
+async def _job_capacity_available(application: FastAPI) -> bool:
+    """Report whether another upload may be parked in the job store.
+
+    The store keeps one uploaded file per pending download for up to
+    ``JOB_TTL_SECONDS``. Without a cap, a client that uploads repeatedly and
+    never downloads would grow the runtime directory without bound, so new work
+    is refused once the cap is reached. Both ``/peek`` and ``/process`` ask
+    before they create a job, because either one can park a file in the store.
+    Expired entries are ignored here because the cleanup task removes them on
+    its own schedule.
+    """
+    cutoff = time.time() - JOB_TTL_SECONDS
+    async with application.state.jobs_lock:
+        live = sum(
+            1 for job in application.state.jobs.values() if job.created_at >= cutoff
+        )
+    return live < MAX_PENDING_JOBS
+
+
 async def _cleanup_expired_jobs(app: FastAPI) -> None:
     while True:
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
@@ -247,8 +268,16 @@ def create_app(
     runtime_dir: Path | None = None,
 ) -> FastAPI:
     resolved_runtime = (runtime_dir or (APP_DIR / ".tmp" / "jobs")).resolve()
+    key_exposure_enabled = setting_enabled(KEY_EXPOSURE_SETTING, env_file)
+    if key_exposure_enabled:
+        LOGGER.warning(
+            "%s is enabled: anyone who can reach this app can read the key that "
+            "decrypts every workbook it has produced",
+            KEY_EXPOSURE_SETTING,
+        )
     templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
     templates.env.globals["CSRF_COOKIE"] = CSRF_COOKIE
+    templates.env.globals["key_exposure_enabled"] = key_exposure_enabled
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -359,6 +388,12 @@ def create_app(
         if not workbook.filename or Path(workbook.filename).suffix.casefold() != ".xlsx":
             await workbook.close()
             return JSONResponse({"error": "Only .xlsx files are supported"}, status_code=400)
+        if not await _job_capacity_available(request.app):
+            await workbook.close()
+            return JSONResponse(
+                {"error": "The server is busy. Wait a moment and try again."},
+                status_code=503,
+            )
 
         token = secrets.token_urlsafe(32)
         peek_dir = request.app.state.runtime_dir / f"peek_{token}"
@@ -367,7 +402,12 @@ def create_app(
         original_filename = workbook.filename or "workbook.xlsx"
         try:
             await _write_upload(workbook, input_path)
-            columns = await run_in_threadpool(peek_workbook_columns, input_path)
+            # Reading a workbook holds the whole package in memory (up to
+            # MAX_UNCOMPRESSED_BYTES), so peeks share the same slot limit as
+            # processing. Without this, concurrent uploads were unbounded and
+            # could exhaust the host's memory before any job was created.
+            async with request.app.state.processing_slots:
+                columns = await run_in_threadpool(peek_workbook_columns, input_path)
         except (ScrubberError, OSError, ValueError) as exc:
             _remove_job_directory(peek_dir, request.app.state.runtime_dir)
             return JSONResponse({"error": _public_error(exc)}, status_code=422)
@@ -523,6 +563,14 @@ def create_app(
             input_path = job_directory / f"input{suffix}"
             output_path = job_directory / f"output{suffix}"
             download_name = _safe_output_name(workbook.filename, mode)
+            if not await _job_capacity_available(request.app):
+                await workbook.close()
+                return templates.TemplateResponse(
+                    request=request,
+                    name="error.html",
+                    context={"message": "The server is busy. Wait a moment and try again."},
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
             job_directory.mkdir(parents=False, exist_ok=False)
             try:
                 await _write_upload(workbook, input_path)
@@ -613,10 +661,20 @@ def create_app(
     async def secret_key(request: Request, csrf_token: str = Form(...)):
         """Return the configured SECRET_KEY so an operator can copy it from the UI.
 
-        This deliberately exposes the key to the browser. The application has no
-        login, so anyone who can reach this endpoint can read the key that
-        decrypts every workbook the app has produced.
+        This deliberately hands the key that decrypts every workbook this app
+        has produced to whoever can open the page, and the application has no
+        login. It is therefore disabled unless the operator opts in with
+        ``ENABLE_KEY_EXPOSURE=1`` in the environment or ``.env``. The response
+        is a 404 when disabled so the endpoint is not advertised. Use the
+        ``setup.ps1``/``setup.sh`` Copy Key action to store a recovery copy
+        without ever putting the key on the wire.
         """
+        if not key_exposure_enabled:
+            LOGGER.warning(
+                "Blocked POST /secret-key: set %s=1 to allow key exposure to browsers",
+                KEY_EXPOSURE_SETTING,
+            )
+            return JSONResponse({"error": "Not found"}, status_code=status.HTTP_404_NOT_FOUND)
         if not _valid_csrf(request, csrf_token):
             return JSONResponse(
                 {"error": "The page expired. Reload the page and try again."},

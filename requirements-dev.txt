@@ -1,0 +1,16 @@
+# Verification-only dependencies. Not needed to run or deploy the app.
+#
+#   python -m pip install -r requirements-dev.txt
+#   python -m unittest discover -s tests -t .
+#
+# pytest is a convenience runner; the suite is plain unittest and also runs
+# without it.
+#
+# openpyxl is what tests/test_real_workbook_interop.py uses to write the input
+# workbook and to read the output back. That test is the one that proves the
+# processed package is still valid OOXML rather than merely readable by this
+# module's own parser, and it skips itself when openpyxl is missing. Leaving
+# openpyxl uninstalled therefore turns the strongest check into a silent skip,
+# so install it before signing off a deployment.
+pytest>=8.0,<10
+openpyxl>=3.1.0,<4

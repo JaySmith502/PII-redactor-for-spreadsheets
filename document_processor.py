@@ -15,9 +15,21 @@ except ImportError:
         fitz = None
 
 try:
-    from .processor import ReplacementRule, ScrubberError, replacement_value
+    from .processor import (
+        ReplacementRule,
+        ScrubberError,
+        parse_xml,
+        replacement_value,
+        xml_bytes,
+    )
 except ImportError:
-    from processor import ReplacementRule, ScrubberError, replacement_value
+    from processor import (
+        ReplacementRule,
+        ScrubberError,
+        parse_xml,
+        replacement_value,
+        xml_bytes,
+    )
 
 
 MAX_PACKAGE_MEMBERS = 10_000
@@ -54,12 +66,17 @@ def validate_docx_package(path: Path) -> None:
 
 
 def load_docx_package(path: Path) -> tuple[dict[str, bytes], list[zipfile.ZipInfo]]:
+    """Read every package member into memory.
+
+    ``zipfile.testzip()`` is deliberately not used: it decompresses every member
+    to check its CRC and each member is read immediately afterwards, so it
+    doubled the decompression work for no extra safety. ``archive.read`` already
+    validates the CRC of each member it returns and raises
+    :class:`zipfile.BadZipFile` on a corrupt one.
+    """
     validate_docx_package(path)
     try:
         with zipfile.ZipFile(path, "r") as archive:
-            bad_member = archive.testzip()
-            if bad_member:
-                raise ScrubberError("Document contains a corrupt package member")
             infos = archive.infolist()
             parts = {info.filename: archive.read(info.filename) for info in infos}
     except (zipfile.BadZipFile, KeyError, RuntimeError) as exc:
@@ -102,10 +119,6 @@ def write_package_atomic(
                 pass
 
 
-def xml_bytes(root: ET.Element) -> bytes:
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
-
-
 def paragraph_text_nodes(root: ET.Element) -> list[list[ET.Element]]:
     groups: list[list[ET.Element]] = []
     for paragraph in root.iter(qn("p")):
@@ -116,7 +129,7 @@ def paragraph_text_nodes(root: ET.Element) -> list[list[ET.Element]]:
 
 
 def replace_docx_xml(data: bytes, replacements: list[ReplacementRule]) -> tuple[bytes, int]:
-    root = ET.fromstring(data)
+    root = parse_xml(data)
     replacements_applied = 0
 
     for text in root.iter(qn("t")):
@@ -175,7 +188,7 @@ def replace_docx(
             continue
         try:
             updated, count = replace_docx_xml(data, replacements)
-        except ET.ParseError as exc:
+        except (ET.ParseError, ScrubberError) as exc:
             raise ScrubberError("DOCX document XML could not be read") from exc
         if count:
             parts[path] = updated
@@ -219,7 +232,26 @@ def pdf_intersection_area(first, second) -> float:
     return float((x1 - x0) * (y1 - y0))
 
 
-def pdf_text_style(page, rectangle) -> tuple[float, tuple[float, float, float], str, float]:
+def pdf_page_spans(page) -> list[tuple[object, dict]]:
+    """Return every ``(rectangle, span)`` pair of text spans on *page*.
+
+    ``page.get_text("dict")`` parses the whole page, so the result is cached by
+    the caller and reused for every rectangle on that page. Resolving one
+    rectangle used to re-parse the page, which made a replacement cost grow with
+    the product of the match count and the page size.
+    """
+    spans: list[tuple[object, dict]] = []
+    for block in page.get_text("dict").get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                bbox = span.get("bbox")
+                if bbox is None:
+                    continue
+                spans.append((fitz.Rect(bbox), span))
+    return spans
+
+
+def pdf_text_style(rectangle, spans) -> tuple[float, tuple[float, float, float], str, float]:
     fallback_size = max(
         PDF_MIN_FONT_SIZE,
         min(PDF_MAX_FONT_SIZE, float(rectangle.height) * 0.78),
@@ -227,15 +259,11 @@ def pdf_text_style(page, rectangle) -> tuple[float, tuple[float, float, float], 
     fallback_baseline = rectangle.y1 - max(0.0, (float(rectangle.height) - fallback_size) / 2)
     best_span = None
     best_score = 0.0
-    text_data = page.get_text("dict")
-    for block in text_data.get("blocks", []):
-        for line in block.get("lines", []):
-            for span in line.get("spans", []):
-                span_rect = fitz.Rect(span.get("bbox"))
-                score = pdf_intersection_area(rectangle, span_rect)
-                if score > best_score:
-                    best_span = span
-                    best_score = score
+    for span_rect, span in spans:
+        score = pdf_intersection_area(rectangle, span_rect)
+        if score > best_score:
+            best_span = span
+            best_score = score
 
     if best_span is None:
         return (fallback_size, (0, 0, 0), "helv", fallback_baseline)
@@ -282,15 +310,20 @@ def replace_pdf(
         for page in document:
             page_changed = False
             overlays = []
+            # Parsed lazily and at most once per page, so pages without matches
+            # never pay for a text extraction at all.
+            spans: list[tuple[object, dict]] | None = None
             for rule in replacements:
                 rectangles = page.search_for(rule.find)
                 if not rectangles:
                     continue
+                if spans is None:
+                    spans = pdf_page_spans(page)
                 total += len(rectangles)
                 page_changed = True
                 for rectangle in rectangles:
                     font_size, text_color, font_name, baseline = pdf_text_style(
-                        page, rectangle
+                        rectangle, spans
                     )
                     page.add_redact_annot(
                         rectangle,
