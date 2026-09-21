@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token | default(request.cookies.get(CSRF_COOKIE, ''), true) }}">
+  <title>{% block title %}PII Scrubber{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}?v=20260907-inline">
+  <script src="{{ url_for('static', path='/app.js') }}?v=20260907-inline" defer></script>
+</head>
+<body>
+  <div class="page-shell">
+    <header class="site-header" aria-label="Application header">
+      <a class="brand" href="/" aria-label="PII Scrubber home">
+        <strong>PII Scrubber</strong>
+      </a>
+      <span class="local-badge" title="All processing happens on this machine">
+        <span class="local-badge-dot" aria-hidden="true"></span>
+        Runs locally
+      </span>
+    </header>
+
+    <main class="main-content">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+      <p>
+        Files are processed by the server running on this machine. Nothing is sent
+        to any external or third-party service.
+      </p>
+    </footer>
+  </div>
+
+  <button
+    id="copy-key-button"
+    class="copy-key-fab"
+    type="button"
+    title="Copy the secret key to the clipboard"
+    aria-label="Copy the secret key to the clipboard"
+  >
+    <span class="copy-key-fab-icon" aria-hidden="true">K</span>
+    <span class="copy-key-fab-label">Copy secret key</span>
+  </button>
+  <div id="copy-key-status" class="copy-key-status" role="status" aria-live="polite" hidden></div>
+
+  <div id="key-modal-backdrop" class="modal-backdrop" hidden aria-hidden="true">
+    <div
+      id="key-modal"
+      class="modal modal-warning"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="key-modal-title"
+      aria-describedby="key-modal-body"
+    >
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span class="modal-icon modal-icon-danger" aria-hidden="true">!</span>
+          <div>
+            <h2 id="key-modal-title">You are about to copy the secret key</h2>
+            <p>Read this before you paste it anywhere.</p>
+          </div>
+        </div>
+        <button id="key-modal-close" class="modal-close-btn" type="button" aria-label="Cancel">X</button>
+      </div>
+
+      <div class="modal-body" id="key-modal-body">
+        <p class="key-warning-lead">
+          This key decrypts <strong>every file this tool has ever encrypted</strong>.
+          Anyone who has it can restore all of the original personal data.
+        </p>
+        <ul class="key-warning-list">
+          <li>Never paste it into email, chat, tickets, documents, or AI assistants.</li>
+          <li>Never store it in a shared drive, screenshot, or code repository.</li>
+          <li>Share it only with authorised staff, through an approved secure channel.</li>
+          <li>Clear your clipboard when you are done.</li>
+        </ul>
+        <label class="key-confirm-check">
+          <input id="key-confirm-checkbox" type="checkbox">
+          <span>I understand and will not share this key with anyone unauthorised.</span>
+        </label>
+      </div>
+
+      <div class="modal-footer">
+        <button id="key-modal-cancel" class="secondary-button" type="button">Cancel</button>
+        <button id="key-modal-confirm" class="primary-button danger-button modal-continue-btn" type="button" disabled>
+          Copy key to clipboard
+        </button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

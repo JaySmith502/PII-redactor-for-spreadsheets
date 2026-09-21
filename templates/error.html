@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="result-card error-card">
+  <div class="error-mark" aria-hidden="true">!</div>
+  <p class="eyebrow">Nothing was written</p>
+  <h1>We couldn't process that file</h1>
+  <p class="result-copy">{{ message }}</p>
+  <a class="primary-button link-button" href="/">Return to upload</a>
+</section>
+{% endblock %}

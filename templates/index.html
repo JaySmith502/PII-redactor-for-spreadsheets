@@ -1,0 +1,183 @@
+{% extends "base.html" %} {% block content %}
+<section class="hero">
+  <p class="eyebrow">Local PII protection</p>
+  <h1>Scrub sensitive data from your files</h1>
+  <p class="hero-copy">
+    Encrypt selected fields or replace sensitive values in spreadsheets,
+    documents, and PDFs &mdash; without changing your original file.
+  </p>
+</section>
+
+<div class="alert alert-info" role="note">
+  <strong>Everything happens on this machine.</strong>
+  Your file is processed by the local server, kept in a temporary folder, and
+  deleted after you download it. It is never uploaded to the cloud or shared
+  with any third-party service. Still, treat the output as sensitive: check the
+  result before you send it on, keep the secret key private, and never paste the
+  key or unscrubbed data into email, chat, or AI tools.
+</div>
+
+{% if not key_ready %}
+<div class="alert alert-danger" role="alert">
+  <strong>Encryption unavailable.</strong>
+  Encrypt and decrypt are temporarily unavailable because the secret key is not
+  configured. Replace only still works.
+</div>
+{% endif %}
+<section class="work-card" aria-labelledby="workbook-form-title">
+  <div class="card-heading">
+    <span class="step-number">1</span>
+    <div>
+      <h2 id="workbook-form-title">Choose an operation</h2>
+      <p>Your original file is never overwritten.</p>
+    </div>
+  </div>
+
+  <form
+    id="workbook-form"
+    action="/process"
+    method="post"
+    enctype="multipart/form-data"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <input type="hidden" id="peek-token-input" name="peek_token" value="" />
+    <input
+      type="hidden"
+      id="selected-columns-input"
+      name="selected_columns"
+      value=""
+    />
+
+    <fieldset class="mode-selector">
+      <legend class="sr-only">Processing mode</legend>
+      <label class="mode-option">
+        <input type="radio" name="mode" value="encrypt" {% if key_ready %}checked{% else %}disabled{% endif %} />
+        <span class="mode-content">
+          <span class="mode-icon mode-icon-lock" aria-hidden="true">E</span>
+          <span>
+            <strong>Encrypt</strong>
+            <small>Protect selected fields for safe internal sharing.</small>
+          </span>
+        </span>
+      </label>
+      <label class="mode-option">
+        <input type="radio" name="mode" value="decrypt" {% if not key_ready %}disabled{% endif %} />
+        <span class="mode-content">
+          <span class="mode-icon mode-icon-unlock" aria-hidden="true">D</span>
+          <span>
+            <strong>Decrypt</strong>
+            <small>Restore values using this server's secret key.</small>
+          </span>
+        </span>
+      </label>
+      <label class="mode-option">
+        <input type="radio" name="mode" value="replace" {% if not key_ready %}checked{% endif %} />
+        <span class="mode-content">
+          <span class="mode-icon mode-icon-replace" aria-hidden="true">R</span>
+          <span>
+            <strong>Replace only</strong>
+            <small>Find and replace values in Excel, Word, or PDF files.</small>
+          </span>
+        </span>
+      </label>
+    </fieldset>
+
+    <div class="section-divider"></div>
+
+    <div class="card-heading compact">
+      <span class="step-number">2</span>
+      <div>
+        <h2>Select a file</h2>
+        <p>
+          Spreadsheets (<code>.xlsx</code>), documents (<code>.docx</code>), or
+          <code>.pdf</code> files up to {{ max_upload_mb }} MB.
+        </p>
+      </div>
+    </div>
+
+    <label id="drop-zone" class="drop-zone" for="workbook-input">
+      <input
+        id="workbook-input"
+        type="file"
+        name="workbook"
+        accept=".xlsx,.docx,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
+      />
+      <span class="upload-symbol" aria-hidden="true">UP</span>
+      <strong id="drop-zone-title">Drop your file here</strong>
+      <span>or <span class="browse-link">browse files</span></span>
+      <small>Maximum file size: {{ max_upload_mb }} MB</small>
+    </label>
+    <div id="file-summary" class="file-summary" hidden aria-live="polite">
+      <span id="file-type-label" class="file-type" aria-hidden="true">FILE</span>
+      <span class="file-details">
+        <strong id="file-name"></strong>
+        <small id="file-size"></small>
+      </span>
+      <button id="remove-file" type="button" class="text-button">Remove</button>
+    </div>
+    <p id="file-error" class="field-error" hidden role="alert"></p>
+
+    <div id="column-section" class="column-section" hidden>
+      <div class="section-divider"></div>
+      <div class="card-heading compact">
+        <span class="step-number">3</span>
+        <div>
+          <h2>Choose fields to encrypt</h2>
+          <p>
+            Nothing is selected by default. Tick only the columns that hold
+            personal data &mdash; everything else is left untouched.
+          </p>
+        </div>
+      </div>
+
+      <div id="column-loading" class="inline-loading" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <p>Reading the file structure...</p>
+      </div>
+      <div id="column-error" class="modal-error-msg" hidden role="alert"></div>
+
+      <div id="column-panel" class="column-panel" hidden>
+        <div class="column-toolbar">
+          <span id="column-count" class="column-count" aria-live="polite">
+            No fields selected
+          </span>
+          <span class="column-toolbar-actions">
+            <button id="select-all-cols" type="button" class="text-button neutral-text-button">
+              Select all
+            </button>
+            <button id="clear-cols" type="button" class="text-button neutral-text-button">
+              Clear
+            </button>
+          </span>
+        </div>
+        <div id="col-list" class="col-list"></div>
+      </div>
+    </div>
+
+    <div id="replace-section" class="replace-section">
+      <div class="section-divider"></div>
+      <div class="card-heading compact">
+        <span class="step-number">4</span>
+        <div>
+          <h2>Find and replace values</h2>
+          <p>Optional. Replacements are applied to the output before encryption.</p>
+        </div>
+      </div>
+      <div id="replace-rules" class="replace-rules"></div>
+      <button id="add-replace-rule" type="button" class="secondary-button add-rule-button">
+        Add replacement
+      </button>
+      <input type="hidden" id="replacement-rules-input" name="replacement_rules" value="" />
+      <p id="replace-error" class="field-error" hidden role="alert"></p>
+    </div>
+
+    <button id="submit-button" class="primary-button" type="submit" disabled>
+      <span class="button-label">Process file</span>
+      <span class="button-working" hidden>Processing securely...</span>
+    </button>
+    <p class="privacy-note">
+      Processed on this machine only. Temporary copies are deleted after download.
+    </p>
+  </form>
+</section>
+{% endblock %}

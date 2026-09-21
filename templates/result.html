@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="result-card">
+  <div class="success-mark" aria-hidden="true">OK</div>
+  <p class="eyebrow">Processing complete</p>
+  <h1>Your file is ready</h1>
+  <p class="result-copy">The file was {{ action }} successfully. Download it once below.</p>
+
+  <form action="/download" method="post" class="download-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="download_token" value="{{ download_token }}">
+    <button class="primary-button download-button" type="submit">
+      <span class="download-icon" aria-hidden="true">DL</span>
+      Download {{ download_name }}
+    </button>
+  </form>
+  <p class="privacy-note">This download works once, then the temporary copy is deleted from this machine. Check the output before you share it.</p>
+  <a class="secondary-link" href="/">Process another file</a>
+</section>
+
+{% if labels_by_sheet or replacement_count %}
+<section class="scope-card result-scope-card" aria-labelledby="scope-title">
+  <div class="scope-card-header">
+    <span class="scope-lock-icon" aria-hidden="true">E</span>
+    <div>
+      <h2 id="scope-title">Processing summary</h2>
+      <p class="scope-subtitle">All changes were applied locally on this machine.</p>
+    </div>
+  </div>
+  {% if replacement_count %}
+  <p class="scope-custom-note">{{ replacement_count }} replacement match{% if replacement_count != 1 %}es{% endif %} applied{% if action == "encrypted" %} before encryption{% endif %}.</p>
+  {% endif %}
+  {% if labels_by_sheet %}
+  <div class="scope-sheet-list">
+    {% for sheet_name, cols in labels_by_sheet.items() %}
+    <div class="scope-sheet-group">
+      <div class="scope-sheet-name">
+        <span class="scope-sheet-icon" aria-hidden="true">S</span>
+        <strong>{{ sheet_name }}</strong>
+      </div>
+      <div class="scope-col-chips">
+        {% for col in cols %}
+        <span class="scope-col-chip"><span class="check" aria-hidden="true">OK</span> {{ col }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

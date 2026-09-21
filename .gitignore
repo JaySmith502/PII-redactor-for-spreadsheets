@@ -1,0 +1,15 @@
+# Secrets and local config
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local scratch/output
+.tmp/
+
+# OS/editor
+.DS_Store
+Thumbs.db
