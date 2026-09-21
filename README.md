@@ -80,8 +80,12 @@ python -m uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 ```bash
-python3 -m uvicorn app:app --host 127.0.0.1 --port 8000 --reload
+.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 ```
+
+On Mac/Linux `setup.sh` installs the dependencies into a project-local `.venv`,
+so run the server through `.venv/bin/python` (or `source .venv/bin/activate`
+first and then use `python`).
 
 Open `http://127.0.0.1:8000`. Uvicorn automatically restarts when Python files
 change; refresh the browser to see template or static-file changes. Use these

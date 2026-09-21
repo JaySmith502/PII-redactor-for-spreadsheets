@@ -168,6 +168,13 @@ if ! find_python_cmd; then
 fi
 write_ok "$("$python_cmd" --version) found"
 
+write_step "Preparing virtual environment (.venv)..."
+if [ ! -x ".venv/bin/python" ] || ! .venv/bin/python -m pip --version >/dev/null 2>&1; then
+  "$python_cmd" -m venv --clear ".venv"
+fi
+python_cmd=".venv/bin/python"
+write_ok "Virtual environment ready at .venv"
+
 write_step "Installing dependencies from requirements.txt..."
 "$python_cmd" -m pip install -r requirements.txt --quiet
 write_ok "All packages installed"
